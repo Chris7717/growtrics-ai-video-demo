@@ -1,0 +1,515 @@
+Project growtrics_ai_video_demo {
+  database_type: 'PostgreSQL'
+
+  Note: '''
+  Schema tối giản cho backend demo tạo video giải thích hóa học bằng AI.
+
+  Các thành phần chính:
+  - Supported concept
+  - Video job
+  - Lesson plan
+  - Lesson scene
+  - Artifact
+  - Job event
+  '''
+}
+
+Enum job_status {
+  queued [note: 'Job đang chờ worker xử lý.']
+  processing [note: 'Worker đang xử lý job.']
+  completed [note: 'Job đã hoàn thành và có final video.']
+  failed [note: 'Job thất bại sau khi retry hoặc fallback không thành công.']
+}
+
+Enum job_stage {
+  resolving_concept [note: 'Nhận diện concept từ learner query.']
+  planning_lesson [note: 'Tạo lesson plan bằng template hoặc LLM.']
+  validating_lesson [note: 'Kiểm tra cấu trúc và nội dung lesson plan.']
+  generating_audio [note: 'Tạo narration audio cho các scene.']
+  generating_visuals [note: 'Tạo visual hoặc animation cho các scene.']
+  rendering_video [note: 'Ghép visual, audio và subtitle thành video.']
+  validating_video [note: 'Kiểm tra chất lượng final video.']
+}
+
+Enum lesson_source {
+  template [note: 'Lesson plan được lấy từ curated template.']
+  llm [note: 'Lesson plan được tạo thành công bởi LLM.']
+  fallback_template [note: 'LLM thất bại và hệ thống sử dụng template fallback.']
+}
+
+Enum artifact_type {
+  lesson_plan [note: 'File JSON chứa lesson plan.']
+  scene_audio [note: 'File audio narration của một scene.']
+  scene_visual [note: 'File hình ảnh hoặc video clip của một scene.']
+  subtitle [note: 'File subtitle của video.']
+  thumbnail [note: 'Ảnh đại diện của video.']
+  final_video [note: 'File MP4 hoàn chỉnh trả cho client.']
+}
+
+Enum artifact_status {
+  pending [note: 'Artifact đang được tạo.']
+  ready [note: 'Artifact đã được tạo và vượt qua validation.']
+  invalid [note: 'Artifact được tạo nhưng không hợp lệ.']
+}
+
+Table supported_concepts {
+  id uuid [
+    pk,
+    note: 'Khóa chính của concept.'
+  ]
+
+  code varchar(100) [
+    not null,
+    unique,
+    note: 'Mã concept, ví dụ ph_scale hoặc covalent_bonds.'
+  ]
+
+  canonical_query text [
+    not null,
+    note: 'Câu hỏi chuẩn đại diện cho concept.'
+  ]
+
+  title varchar(255) [
+    not null,
+    note: 'Tên hiển thị của concept.'
+  ]
+
+  required_facts jsonb [
+    not null,
+    default: '[]',
+    note: 'Các kiến thức bắt buộc phải xuất hiện trong lesson.'
+  ]
+
+  allowed_visual_types jsonb [
+    not null,
+    default: '[]',
+    note: 'Danh sách visual type được phép sử dụng.'
+  ]
+
+  template_path text [
+    not null,
+    note: 'Đường dẫn tới curated lesson template.'
+  ]
+
+  is_active boolean [
+    not null,
+    default: true,
+    note: 'Concept có đang được phép nhận request mới hay không.'
+  ]
+
+  created_at timestamptz [
+    not null,
+    note: 'Thời điểm concept được tạo.'
+  ]
+
+  updated_at timestamptz [
+    not null,
+    note: 'Thời điểm concept được cập nhật gần nhất.'
+  ]
+
+  Note: '''
+  Danh sách concept mà demo hỗ trợ.
+
+  Ban đầu gồm:
+  - ph_scale
+  - covalent_bonds
+  - ionic_vs_covalent
+  '''
+}
+
+Table video_jobs {
+  id uuid [
+    pk,
+    note: 'Job ID được API trả trực tiếp cho client.'
+  ]
+
+  query text [
+    not null,
+    note: 'Câu hỏi nguyên bản learner gửi lên.'
+  ]
+
+  normalized_query text [
+    not null,
+    note: 'Query đã được chuẩn hóa để nhận diện concept.'
+  ]
+
+  concept_id uuid [
+    ref: > supported_concepts.id,
+    note: 'Concept được nhận diện từ learner query.'
+  ]
+
+  status job_status [
+    not null,
+    default: 'queued',
+    note: 'Trạng thái tổng thể của job.'
+  ]
+
+  current_stage job_stage [
+    note: 'Stage pipeline hiện tại của worker.'
+  ]
+
+  progress smallint [
+    not null,
+    default: 0,
+    note: 'Tiến độ xử lý từ 0 đến 100.'
+  ]
+
+  retry_count int [
+    not null,
+    default: 0,
+    note: 'Tổng số lần retry trong pipeline.'
+  ]
+
+  used_fallback boolean [
+    not null,
+    default: false,
+    note: 'Cho biết job có sử dụng fallback template hoặc static visual không.'
+  ]
+
+  error_code varchar(100) [
+    note: 'Mã lỗi cuối cùng nếu job thất bại.'
+  ]
+
+  error_message text [
+    note: 'Thông báo mô tả lỗi cuối cùng.'
+  ]
+
+  estimated_cost_usd decimal(10,6) [
+    not null,
+    default: 0,
+    note: 'Chi phí provider ước tính của job.'
+  ]
+
+  started_at timestamptz [
+    note: 'Thời điểm worker bắt đầu xử lý.'
+  ]
+
+  completed_at timestamptz [
+    note: 'Thời điểm job hoàn thành.'
+  ]
+
+  created_at timestamptz [
+    not null,
+    note: 'Thời điểm API tạo job.'
+  ]
+
+  updated_at timestamptz [
+    not null,
+    note: 'Thời điểm job được cập nhật gần nhất.'
+  ]
+
+  indexes {
+    status [
+      note: 'Hỗ trợ worker lấy các job đang queued.'
+    ]
+
+    created_at [
+      note: 'Hỗ trợ liệt kê job theo thời gian tạo.'
+    ]
+
+    concept_id [
+      note: 'Hỗ trợ lọc job theo concept.'
+    ]
+  }
+
+  Note: '''
+  Nguồn trạng thái chính của video job.
+
+  API tạo job ở trạng thái queued.
+  Worker cập nhật stage, progress và trạng thái cuối cùng.
+  '''
+}
+
+Table lesson_plans {
+  id uuid [
+    pk,
+    note: 'Khóa chính của lesson plan.'
+  ]
+
+  job_id uuid [
+    not null,
+    unique,
+    ref: > video_jobs.id,
+    note: 'Video job sở hữu lesson plan.'
+  ]
+
+  source lesson_source [
+    not null,
+    note: 'Nguồn tạo lesson plan.'
+  ]
+
+  title varchar(255) [
+    not null,
+    note: 'Tiêu đề của video.'
+  ]
+
+  summary text [
+    note: 'Phần tóm tắt nội dung lesson.'
+  ]
+
+  learning_objectives jsonb [
+    not null,
+    default: '[]',
+    note: 'Danh sách mục tiêu học tập.'
+  ]
+
+  estimated_duration_seconds decimal(8,2) [
+    note: 'Thời lượng dự kiến của toàn video.'
+  ]
+
+  is_valid boolean [
+    not null,
+    default: false,
+    note: 'Cho biết lesson plan đã vượt qua validation hay chưa.'
+  ]
+
+  validation_errors jsonb [
+    not null,
+    default: '[]',
+    note: 'Danh sách lỗi validation nếu lesson plan không hợp lệ.'
+  ]
+
+  created_at timestamptz [
+    not null,
+    note: 'Thời điểm lesson plan được tạo.'
+  ]
+
+  updated_at timestamptz [
+    not null,
+    note: 'Thời điểm lesson plan được cập nhật gần nhất.'
+  ]
+
+  Note: '''
+  Mỗi job trong demo chỉ giữ một lesson plan cuối cùng.
+
+  Nếu LLM thất bại, lesson plan này được ghi đè bằng fallback template.
+  '''
+}
+
+Table lesson_scenes {
+  id uuid [
+    pk,
+    note: 'Khóa chính của scene.'
+  ]
+
+  lesson_plan_id uuid [
+    not null,
+    ref: > lesson_plans.id,
+    note: 'Lesson plan chứa scene.'
+  ]
+
+  scene_index int [
+    not null,
+    note: 'Thứ tự scene trong video.'
+  ]
+
+  title varchar(255) [
+    not null,
+    note: 'Tiêu đề ngắn của scene.'
+  ]
+
+  narration text [
+    not null,
+    note: 'Nội dung narration được gửi tới TTS.'
+  ]
+
+  on_screen_text jsonb [
+    not null,
+    default: '[]',
+    note: 'Danh sách chữ hiển thị trên scene.'
+  ]
+
+  visual_type varchar(100) [
+    not null,
+    note: 'Renderer cần sử dụng, ví dụ ph_scale hoặc electron_sharing.'
+  ]
+
+  visual_data jsonb [
+    not null,
+    default: '{}',
+    note: 'Payload cấu hình cho visual renderer.'
+  ]
+
+  planned_duration_seconds decimal(8,2) [
+    not null,
+    note: 'Thời lượng dự kiến của scene.'
+  ]
+
+  actual_duration_seconds decimal(8,2) [
+    note: 'Thời lượng thực tế sau khi audio và visual được tạo.'
+  ]
+
+  created_at timestamptz [
+    not null,
+    note: 'Thời điểm scene được tạo.'
+  ]
+
+  updated_at timestamptz [
+    not null,
+    note: 'Thời điểm scene được cập nhật gần nhất.'
+  ]
+
+  indexes {
+    lesson_plan_id [
+      note: 'Hỗ trợ lấy toàn bộ scene của lesson plan.'
+    ]
+
+    (lesson_plan_id, scene_index) [
+      unique,
+      note: 'Đảm bảo thứ tự scene là duy nhất trong lesson plan.'
+    ]
+  }
+}
+
+Table artifacts {
+  id uuid [
+    pk,
+    note: 'Khóa chính của artifact.'
+  ]
+
+  job_id uuid [
+    not null,
+    ref: > video_jobs.id,
+    note: 'Video job sở hữu artifact.'
+  ]
+
+  scene_id uuid [
+    ref: > lesson_scenes.id,
+    note: 'Scene sở hữu artifact; null đối với final video hoặc subtitle tổng.'
+  ]
+
+  artifact_type artifact_type [
+    not null,
+    note: 'Loại file artifact.'
+  ]
+
+  status artifact_status [
+    not null,
+    default: 'pending',
+    note: 'Trạng thái tạo và validation của artifact.'
+  ]
+
+  file_path text [
+    not null,
+    note: 'Đường dẫn file trong local artifact storage.'
+  ]
+
+  file_name varchar(255) [
+    note: 'Tên file hiển thị.'
+  ]
+
+  mime_type varchar(100) [
+    note: 'MIME type, ví dụ video/mp4 hoặc audio/mpeg.'
+  ]
+
+  file_size_bytes bigint [
+    note: 'Kích thước file tính bằng byte.'
+  ]
+
+  duration_seconds decimal(10,3) [
+    note: 'Thời lượng của audio hoặc video.'
+  ]
+
+  metadata jsonb [
+    not null,
+    default: '{}',
+    note: 'Metadata mở rộng và kết quả validation bằng FFprobe.'
+  ]
+
+  created_at timestamptz [
+    not null,
+    note: 'Thời điểm artifact được tạo.'
+  ]
+
+  updated_at timestamptz [
+    not null,
+    note: 'Thời điểm artifact được cập nhật gần nhất.'
+  ]
+
+  indexes {
+    job_id [
+      note: 'Hỗ trợ lấy toàn bộ artifact của job.'
+    ]
+
+    scene_id [
+      note: 'Hỗ trợ lấy audio và visual của scene.'
+    ]
+
+    (job_id, artifact_type) [
+      note: 'Hỗ trợ tìm final video, subtitle hoặc thumbnail của job.'
+    ]
+  }
+
+  Note: '''
+  Bảng lưu metadata của file trong local filesystem.
+
+  Kết quả validation có thể được lưu trong metadata:
+
+  {
+    "ffprobe_readable": true,
+    "has_video_stream": true,
+    "has_audio_stream": true,
+    "resolution": "1280x720"
+  }
+  '''
+}
+
+Table job_events {
+  id bigint [
+    pk,
+    increment,
+    note: 'Khóa chính tăng tự động của event.'
+  ]
+
+  job_id uuid [
+    not null,
+    ref: > video_jobs.id,
+    note: 'Video job phát sinh event.'
+  ]
+
+  event_type varchar(100) [
+    not null,
+    note: 'Loại event như status_changed, retry hoặc fallback_used.'
+  ]
+
+  stage job_stage [
+    note: 'Stage pipeline liên quan đến event.'
+  ]
+
+  message text [
+    note: 'Mô tả ngắn về event hoặc lỗi.'
+  ]
+
+  metadata jsonb [
+    not null,
+    default: '{}',
+    note: 'Thông tin bổ sung như attempt, scene index hoặc provider.'
+  ]
+
+  created_at timestamptz [
+    not null,
+    note: 'Thời điểm event xảy ra.'
+  ]
+
+  indexes {
+    job_id [
+      note: 'Hỗ trợ lấy toàn bộ lịch sử của job.'
+    ]
+
+    (job_id, created_at) [
+      note: 'Hỗ trợ hiển thị timeline job theo thời gian.'
+    ]
+  }
+
+  Note: '''
+  Bảng này thay thế generation_attempts và provider_calls trong demo.
+
+  Ví dụ metadata retry:
+
+  {
+    "attempt": 2,
+    "provider": "edge_tts",
+    "error_code": "TTS_TIMEOUT"
+  }
+  '''
+}

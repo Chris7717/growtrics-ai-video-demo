@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Growtrics AI Video Demo</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f0f2f5; margin: 0; padding: 2rem; color: #333; }
+        .container { max-width: 800px; margin: 0 auto; background: white; padding: 2rem; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+        h1 { text-align: center; color: #2c3e50; }
+        .input-group { display: flex; gap: 10px; margin-bottom: 20px; }
+        input[type="text"] { flex: 1; padding: 12px; border: 1px solid #ddd; border-radius: 6px; font-size: 16px; }
+        button { padding: 12px 24px; background-color: #3498db; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 16px; font-weight: bold; transition: background 0.3s; }
+        button:hover { background-color: #2980b9; }
+        button:disabled { background-color: #95a5a6; cursor: not-allowed; }
+        .status-box { margin-top: 20px; padding: 15px; background: #e8f4f8; border-left: 4px solid #3498db; border-radius: 4px; display: none; }
+        .progress-bar-container { width: 100%; background-color: #ddd; border-radius: 8px; margin-top: 15px; overflow: hidden; display: none; }
+        .progress-bar { height: 10px; background-color: #2ecc71; width: 0%; transition: width 0.5s; }
+        .events-log { margin-top: 20px; max-height: 400px; overflow-y: auto; background: #f8f9fa; border: 1px solid #ddd; padding: 10px; font-size: 14px; border-radius: 6px; display: none; white-space: pre-wrap; word-wrap: break-word; }
+        .events-log p { margin: 5px 0; }
+        .video-container { margin-top: 30px; display: none; text-align: center; }
+        video { width: 100%; max-width: 600px; border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.2); }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>🎬 Growtrics AI Video Generator</h1>
+    <p>Enter an educational concept (e.g., "explain quantum physics", "how does a black hole work"):</p>
+    
+    <div class="input-group">
+        <input type="text" id="queryInput" placeholder="e.g., Explain how photosynthesis works...">
+        <button id="generateBtn" onclick="generateVideo()">Generate Video</button>
+    </div>
+
+    <div class="status-box" id="statusBox">
+        <strong id="statusText">Status: Initializing...</strong>
+    </div>
+
+    <div class="progress-bar-container" id="progressContainer">
+        <div class="progress-bar" id="progressBar"></div>
+    </div>
+
+    <div class="events-log" id="eventsLog"></div>
+
+    <div class="video-container" id="videoContainer">
+        <h3>🎉 Your video is ready!</h3>
+        <video id="resultVideo" controls preload="metadata">
+            Your browser does not support the video tag.
+        </video>
+    </div>
+</div>
+
+<script>
+    let currentJobId = null;
+    let pollInterval = null;
+
+    async function generateVideo() {
+        const query = document.getElementById('queryInput').value;
+        if (!query) return alert("Please enter a concept!");
+
+        // Reset UI
+        document.getElementById('generateBtn').disabled = true;
+        document.getElementById('statusBox').style.display = 'block';
+        document.getElementById('progressContainer').style.display = 'block';
+        document.getElementById('eventsLog').style.display = 'block';
+        document.getElementById('eventsLog').innerHTML = '';
+        document.getElementById('videoContainer').style.display = 'none';
+        document.getElementById('progressBar').style.width = '0%';
+        document.getElementById('statusText').innerText = 'Status: Sending request...';
+
+        try {
+            const response = await fetch('/api/v1/videos', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ query: query })
+            });
+            const data = await response.json();
+            
+            if (response.ok) {
+                currentJobId = data.job_id;
+                document.getElementById('statusText').innerText = `Status: Queued (Job ID: ${currentJobId})`;
+                // Start polling
+                pollInterval = setInterval(checkStatus, 2000);
+            } else {
+                alert("Error: " + JSON.stringify(data));
+                document.getElementById('generateBtn').disabled = false;
+            }
+        } catch (error) {
+            alert("API connection error");
+            document.getElementById('generateBtn').disabled = false;
+        }
+    }
+
+    async function checkStatus() {
+        if (!currentJobId) return;
+
+        try {
+            // Check Job details
+            const jobRes = await fetch(`/api/v1/videos/${currentJobId}`);
+            const jobData = await jobRes.json();
+            
+            document.getElementById('progressBar').style.width = `${jobData.progress}%`;
+            document.getElementById('statusText').innerText = `Status: ${jobData.current_stage || 'queued'} (${jobData.progress}%)`;
+
+            // Check Events
+            const eventRes = await fetch(`/api/v1/videos/${currentJobId}/events`);
+            const eventData = await eventRes.json();
+            
+            const logBox = document.getElementById('eventsLog');
+            logBox.innerHTML = '';
+            eventData.forEach(ev => {
+                logBox.innerHTML += `<p><strong>[${ev.stage}]</strong> ${ev.message} <em>(${new Date(ev.created_at).toLocaleTimeString()})</em></p>`;
+            });
+            logBox.scrollTop = logBox.scrollHeight; // auto scroll
+
+            if (jobData.status === 'completed') {
+                clearInterval(pollInterval);
+                document.getElementById('statusText').innerText = "Status: 100% Completed!";
+                document.getElementById('generateBtn').disabled = false;
+                fetchVideoUrl();
+            } else if (jobData.status === 'failed') {
+                clearInterval(pollInterval);
+                document.getElementById('statusText').innerText = `Status: FAILED - ${jobData.error_message}`;
+                document.getElementById('generateBtn').disabled = false;
+            }
+        } catch (error) {
+            console.error("Polling error", error);
+        }
+    }
+
+    async function fetchVideoUrl() {
+        try {
+            const res = await fetch(`/api/v1/videos/${currentJobId}/artifact`);
+            if (res.ok) {
+                const data = await res.json();
+                document.getElementById('videoContainer').style.display = 'block';
+                document.getElementById('resultVideo').src = data.url;
+            } else {
+                alert("Could not get the video link.");
+            }
+        } catch (e) {
+            console.error(e);
+        }
+    }
+</script>
+
+</body>
+</html>

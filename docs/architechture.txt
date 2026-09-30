@@ -1,0 +1,48 @@
+app/
+├── main.py
+├── api/
+│   └── videos.py
+├── models/
+│   ├── requests.py
+│   ├── jobs.py
+│   └── lesson.py
+├── services/
+│   ├── job_service.py
+│   ├── generation_service.py
+│   ├── script_generator.py
+│   ├── visual_generator.py
+│   ├── audio_generator.py
+│   ├── video_renderer.py
+│   └── quality_validator.py
+├── repositories/
+│   └── job_repository.py
+├── workers/
+│   └── video_worker.py
+├── providers/
+│   ├── llm_provider.py
+│   └── tts_provider.py
+├── templates/
+│   ├── ph_scale.json
+│   ├── covalent_bonds.json
+│   └── ionic_vs_covalent.json
+└── artifacts/
+
+
+Dùng template-driven motion graphics:
+
+nền sạch;
+typography rõ;
+icon và hình minh họa vector;
+animation đơn giản;
+narration;
+subtitle;
+chuyển cảnh ngắn.
+
+
+Có thể giả lập:
+
+LLM bằng ba lesson template được chuẩn bị sẵn.
+Visual generation bằng animation code.
+AI image generation bằng icon hoặc SVG.
+Queue bằng asyncio.Queue.
+Persistence bằng dictionary hoặc JSON file.
